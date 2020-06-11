@@ -3,7 +3,10 @@
 This is a simple search engine to query local files.
 """
 
+import os
+import glob
 import math
+import json
 import spacy
 from collections import defaultdict
 nlp = spacy.load("en_core_web_sm")
@@ -68,13 +71,22 @@ class search_engine:
             for found_doc in self.inverted_index[q]:
                 print(self.get_tf_idf(found_doc, q))
                 result[found_doc] += self.get_tf_idf(found_doc, q)
-        for id, score in result.items():
-            print(score)
-            print(self.all_documents[id])
+        for id in sorted(result, key=result.get, reverse=True):
+            print(result[id], self.all_documents[id])
         return result
 
 if __name__ == "__main__":
     """ This is executed when run from the command line """
+    """
+    new_docs = []
+    folder_path = "./test/"
+    for letter in glob.glob(os.path.join(folder_path, "*.json")):
+        print(letter)
+        with open(letter, encoding="utf-8") as json_file:
+            data = json.load(json_file)
+            print(data["text"])
+            new_docs.append(data["text"])
+    """
     new_docs = [
         "oh romeo wherefore art thou art thou?",
         "These Violent Delights Have Violent Ends",
@@ -85,4 +97,6 @@ if __name__ == "__main__":
         "Could this be madness or such blah?"
     ]
     test = search_engine(new_docs)
-    test.query("method of madness")
+    while True:
+        my_new_query = input("Enter query: ")
+        test.query(my_new_query)
