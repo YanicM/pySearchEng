@@ -85,6 +85,9 @@ class PySearchEngine:
         return document
 
     def get_tf_idf(self, doc, term):
+        forward_index = db["forward_index"]
+        inverted_index = db["inverted_index"]
+        number_of_pages = db["all_documents"].count()
         """Calculates the TF-IDF value for a term.
 
         Args:
@@ -98,22 +101,38 @@ class PySearchEngine:
             TF-IDF as a float.
 
         """
-        tf = self.forward_index[doc][term] / len(self.forward_index[doc].keys())
-        idf = math.log10(self.number_of_pages / len(self.inverted_index[term]))
+        print(f"trying to find doc")
+        print(forward_index[doc])
+        print(forward_index[doc]["tokens"][term])
+        forward_tokens = forward_index[doc]["tokens"].getStore()
+        tf = forward_index[doc]["tokens"][term] / len((forward_tokens).keys())
+        #for k, v in dict(forward_index[doc]["tokens"]).items():
+        #    print(k, v)
+        print("calculated tf")
+        inverted_tokens = inverted_index[term]["document"]
+        print(inverted_tokens)
+        idf = math.log10(number_of_pages / len(inverted_tokens))
+        print("calculated idf")
         return tf * idf
 
     def query(self, new_query):
         new_query = set(self.tokenize(new_query))
         # result = defaultdict(lambda: defaultdict(int))
         result = defaultdict(int)
+        all_documents = db["all_documents"]
+        inverted_index = db["inverted_index"]
         for q in new_query:
             print(q)
-            #for found_doc in self.inverted_index[q]:
-            for found_doc in self.inverted_index.set(q, None):
-                print(self.get_tf_idf(found_doc, q))
-                result[found_doc] += self.get_tf_idf(found_doc, q)
+            try:
+                found_doc = inverted_index[q]["document"]
+                print(found_doc)
+                for doc in found_doc:
+                    print(doc)
+                    result[doc] += self.get_tf_idf(doc, q)
+            except:
+                print("Word not found")
         for doc_id in sorted(result, key=result.get, reverse=True):
-            print(result[doc_id], self.all_documents[doc_id])
+            print(result[doc_id], all_documents[doc_id]["text"])
         return result
 
     def create_hash_value(self, s):
@@ -137,8 +156,8 @@ class Indexer(PySearchEngine):
             self.upload_doc(collection=all_documents, doc=doc, key=doc_hash, update=False)
             # Create the forward index.
             tokens = self.tokenize(doc["text"])
-            new_forward_doc = {"tokens": tokens}
-            self.upload_doc(collection=forward_index, doc=new_forward_doc, key=doc_hash, update=False)
+            new_forward_doc = {token: tokens.count(token) for token in tokens}
+            self.upload_doc(collection=forward_index, doc={"tokens": new_forward_doc}, key=doc_hash, update=False)
             # Create/Update the inverted index.
             for t in tokens:
                 self.upload_doc(collection=inverted_index, doc={"document": [doc_hash]}, key=t, update=True)
@@ -189,9 +208,7 @@ if __name__ == "__main__":
         ("Could this be madness or such blah?", ["g.com"], ["", ""])
     ]
     engine = PySearchEngine()
-    index = Indexer(new_docs=new_docs)
-    """
+    # index = Indexer(new_docs=new_docs)
     while True:
         new_query = input("Enter query: ")
         engine.query(new_query)
-    """
