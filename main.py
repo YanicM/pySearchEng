@@ -20,7 +20,6 @@ __license__ = "MIT"
 conn = Connection(username="root", password="1234", arangoURL="http://127.0.0.1:8530/")
 db = conn["_system"]
 
-
 class PySearchEngine:
     #def __init__(self, docs, files=False, save=False):
     def __init__(self):
@@ -129,18 +128,32 @@ class Indexer(PySearchEngine):
         inverted_index = db["inverted_index"]
         forward_index = db["forward_index"]
         for doc in new_docs:
+            # Create a unique hash for this document.
             doc_hash = self.create_hash_value(doc[0])
+            # Store this document in the database.
             doc = {"text": doc[0],
                    "url": doc[1],
                    "links": doc[2]}
             self.upload_doc(collection=all_documents, doc=doc, key=doc_hash, update=False)
+            # Create the forward index.
+            tokens = self.tokenize(doc["text"])
+            new_forward_doc = {"tokens": tokens}
+            self.upload_doc(collection=forward_index, doc=new_forward_doc, key=doc_hash, update=False)
+            # Create/Update the inverted index.
+            for t in tokens:
+                self.upload_doc(collection=inverted_index, doc={"document": [doc_hash]}, key=t, update=True)
 
 
     def upload_doc(self, collection, doc, key, update=False):
         try:
             doc_in_db = collection[key]
             for k, v in doc.items():
-                doc_in_db[k] = v
+                if update:
+                    existing_values = doc_in_db[k]
+                    existing_values.append(v[0])
+                    doc_in_db[k] = list(set(existing_values))
+                else:
+                    doc_in_db[k] = v
             doc_in_db.save()
         except Exception as e:
             create_doc = collection.createDocument()
