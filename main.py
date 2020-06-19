@@ -3,15 +3,12 @@
 This is a simple search engine to query local files.
 """
 
-import os
-import glob
 import math
 import hashlib
-import json
-import pickle
 import spacy
 from pyArango.connection import *
 from collections import defaultdict
+
 nlp = spacy.load("en_core_web_sm")
 
 __author__ = "Yanic Moeller"
@@ -20,60 +17,11 @@ __license__ = "MIT"
 conn = Connection(username="root", password="1234", arangoURL="http://127.0.0.1:8530/")
 db = conn["_system"]
 
-class PySearchEngine:
-    #def __init__(self, docs, files=False, save=False):
-    def __init__(self):
-        # TODO: Get indices!
-        """
-        if not files and docs:
-            check_page_rank = False
-            self.inverted_index = defaultdict(set)
-            self.forward_index = defaultdict(lambda: defaultdict(int))
-            if isinstance(docs[0], tuple):
-                check_page_rank = True
-                self.links = dict()
-                self.location_hash = dict()
-                print("PageRank activated")
-            self.all_documents = dict()
-            for doc in docs:
-                if check_page_rank:
-                    doc, location, links = doc
-                doc_hash = hash(doc)
-                self.all_documents[doc_hash] = doc
-                tokens = self.tokenize(doc)
-                for token in tokens:
-                    self.inverted_index[token].add(doc_hash)
-                for token in set(tokens):
-                    self.forward_index[doc_hash][token] += tokens.count(token)
-            self.number_of_pages = len(self.forward_index.keys())
-            # Save these indices to save time in the future.
-            print("Inverted Index")
-            print(self.inverted_index)
-            if save:
-                with open('all_documents.txt', 'w', encoding="utf8") as json_file:
-                    json.dump(self.all_documents, json_file, default=serialize_sets)
-                self.inverted_index = dict(self.inverted_index)
-                with open('inverted_index.txt', 'w', encoding="utf8") as json_file:
-                    json.dump(self.inverted_index, json_file, default=serialize_sets)
-                self.forward_index = dict(self.forward_index)
-                with open('forward_index.txt', 'w', encoding="utf8") as json_file:
-                    json.dump(self.forward_index, json_file, default=serialize_sets)
-        elif files and not docs:
-            with open('all_documents.txt', 'r', encoding="utf8") as json_file:
-                self.all_documents = json.load(json_file)
-            with open('inverted_index.txt', 'r', encoding="utf8") as json_file:
-                self.inverted_index = json.load(json_file)
-            with open('forward_index.txt', 'r', encoding="utf8") as json_file:
-                self.forward_index = json.load(json_file)
-            print("Files were successfully retrieved!")
-        else:
-            raise KeyError("The necessary files weren't provided.")
-        print(self.all_documents)
-        print(self.inverted_index)
-        print(self.forward_index)
-        """
 
-    def tokenize(self, doc_to_tokenize):
+class PySearchEngine:
+
+    @staticmethod
+    def tokenize(doc_to_tokenize):
         stop_words = {"the", "a", "an", "is", "this", "to", "be", "-PRON-"}
         document = []
         for word in doc_to_tokenize.split():
@@ -84,44 +32,28 @@ class PySearchEngine:
         document = [token.lemma_ for token in document if token.lemma_ not in stop_words]
         return document
 
-    def get_tf_idf(self, doc, term):
+    @staticmethod
+    def create_hash_value(s):
+        hash_object = hashlib.sha256(str(s).encode('utf-8'))
+        return hash_object.hexdigest()
+
+    @staticmethod
+    def get_tf_idf(doc, term):
         forward_index = db["forward_index"]
         inverted_index = db["inverted_index"]
         number_of_pages = db["all_documents"].count()
-        """Calculates the TF-IDF value for a term.
-
-        Args:
-            doc: The document itself
-            term: A term that is in the search query
-            tf: How often the term appears in a document
-            df: Number of documents that contain this term
-            number_of_pages: Number of all documents
-
-        Returns:
-            TF-IDF as a float.
-
-        """
-        print(f"trying to find doc")
-        print(forward_index[doc])
-        print(forward_index[doc]["tokens"][term])
         forward_tokens = forward_index[doc]["tokens"].getStore()
-        tf = forward_index[doc]["tokens"][term] / len((forward_tokens).keys())
-        #for k, v in dict(forward_index[doc]["tokens"]).items():
-        #    print(k, v)
-        print("calculated tf")
+        tf = forward_index[doc]["tokens"][term] / len(forward_tokens.keys())
         inverted_tokens = inverted_index[term]["document"]
-        print(inverted_tokens)
         idf = math.log10(number_of_pages / len(inverted_tokens))
-        print("calculated idf")
         return tf * idf
 
-    def query(self, new_query):
-        new_query = set(self.tokenize(new_query))
-        # result = defaultdict(lambda: defaultdict(int))
+    def query(self, this_query):
+        this_query = set(self.tokenize(this_query))
         result = defaultdict(int)
         all_documents = db["all_documents"]
         inverted_index = db["inverted_index"]
-        for q in new_query:
+        for q in this_query:
             print(q)
             try:
                 found_doc = inverted_index[q]["document"]
@@ -135,32 +67,44 @@ class PySearchEngine:
             print(result[doc_id], all_documents[doc_id]["text"])
         return result
 
-    def create_hash_value(self, s):
-        hash_object = hashlib.sha256(str(s).encode('utf-8'))
-        return hash_object.hexdigest()
-
 
 class Indexer(PySearchEngine):
 
-    def __init__(self, new_docs):
+    def __init__(self, docs_to_index):
         all_documents = db["all_documents"]
         inverted_index = db["inverted_index"]
         forward_index = db["forward_index"]
-        for doc in new_docs:
+        for doc in docs_to_index:
             # Create a unique hash for this document.
             doc_hash = self.create_hash_value(doc[0])
             # Store this document in the database.
             doc = {"text": doc[0],
                    "url": doc[1],
-                   "links": doc[2]}
+                   "links": doc[2],
+                   "page_rank": 0}
             self.upload_doc(collection=all_documents, doc=doc, key=doc_hash, update=False)
             # Create the forward index.
             tokens = self.tokenize(doc["text"])
             new_forward_doc = {token: tokens.count(token) for token in tokens}
-            self.upload_doc(collection=forward_index, doc={"tokens": new_forward_doc}, key=doc_hash, update=False)
+            self.upload_doc(collection=forward_index,
+                            doc={"tokens": new_forward_doc},
+                            key=doc_hash, update=False)
             # Create/Update the inverted index.
             for t in tokens:
-                self.upload_doc(collection=inverted_index, doc={"document": [doc_hash]}, key=t, update=True)
+                self.upload_doc(collection=inverted_index,
+                                doc={"document": [doc_hash]},
+                                key=t, update=True)
+        # Calculate the page rank.
+        for doc in all_documents.fetchAll():
+            links = doc.getStore()["links"]
+            # url = doc.getStore()["url"]
+            print("NEW PAGE RANK:")
+            for link in set(links):
+                print(link)
+                page_rank = (links.count(link) * 0.25) / len(links)
+                print(page_rank)
+                all_documents[]
+
 
 
     def upload_doc(self, collection, doc, key, update=False):
@@ -199,16 +143,17 @@ if __name__ == "__main__":
             new_docs.append(data["text"])
     """
     new_docs = [
-        ("oh romeo wherefore art thou art thou?", ["a.com"], ["", ""]),
-        ("These Violent Delights Have Violent Ends", ["b.com"], ["", "test.com"]),
-        ("The fool doth think he is wise, but the wise man knows himself to be a fool.", ["c.com"], ["", ""]),
-        ("Love all, trust a few, do wrong to none.", ["d.com"], ["", ""]),
-        ("Though this be madness, yet there is method in't.", ["e.com"], ["", ""]),
-        ("What is love?", ["f.com"], ["", ""]),
-        ("Could this be madness or such blah?", ["g.com"], ["", ""])
+        ("oh romeo wherefore art thou art thou?", ["a.com"], ["b.com"]),
+        ("These Violent Delights Have Violent Ends", ["b.com"], ["a.com"]),
+        ("The fool doth think he is wise, but the wise man knows himself to be a fool.",
+         ["c.com"], ["a.com", "a.com", "e.com"]),
+        ("Love all, trust a few, do wrong to none.", ["d.com"], ["a.com"]),
+        ("Though this be madness, yet there is method in't.", ["e.com"], ["a.com"]),
+        ("What is love?", ["f.com"], ["a.com"]),
+        ("Could this be madness or such blah?", ["g.com"], ["b.com", "d.com", "e.com"])
     ]
     engine = PySearchEngine()
-    # index = Indexer(new_docs=new_docs)
-    while True:
-        new_query = input("Enter query: ")
-        engine.query(new_query)
+    index = Indexer(docs_to_index=new_docs)
+    #while True:
+    #    new_query = input("Enter query: ")
+    #    engine.query(new_query)
