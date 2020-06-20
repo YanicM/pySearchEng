@@ -5,9 +5,9 @@ This is a simple search engine to query local files.
 
 import math
 import hashlib
+from collections import defaultdict
 import spacy
 from pyArango.connection import *
-from collections import defaultdict
 
 nlp = spacy.load("en_core_web_sm")
 
@@ -63,6 +63,7 @@ class PySearchEngine:
                     result[doc] += self.get_tf_idf(doc, q)
             except:
                 print("Word not found")
+        # Display the results.
         for doc_id in sorted(result, key=result.get, reverse=True):
             print(result[doc_id], all_documents[doc_id]["text"])
         return result
@@ -74,6 +75,7 @@ class Indexer(PySearchEngine):
         all_documents = db["all_documents"]
         inverted_index = db["inverted_index"]
         forward_index = db["forward_index"]
+        urls = db["urls"]
         for doc in docs_to_index:
             # Create a unique hash for this document.
             doc_hash = self.create_hash_value(doc[0])
@@ -83,6 +85,9 @@ class Indexer(PySearchEngine):
                    "links": doc[2],
                    "page_rank": 0}
             self.upload_doc(collection=all_documents, doc=doc, key=doc_hash, update=False)
+            # Store URLs with their hashes.
+            self.upload_doc(collection=urls, doc={"hash": doc_hash}, key=str(doc["url"][0]),
+                            update=False)
             # Create the forward index.
             tokens = self.tokenize(doc["text"])
             new_forward_doc = {token: tokens.count(token) for token in tokens}
@@ -95,16 +100,17 @@ class Indexer(PySearchEngine):
                                 doc={"document": [doc_hash]},
                                 key=t, update=True)
         # Calculate the page rank.
+        temp_page_rank = defaultdict(float)
         for doc in all_documents.fetchAll():
             links = doc.getStore()["links"]
-            # url = doc.getStore()["url"]
-            print("NEW PAGE RANK:")
             for link in set(links):
-                print(link)
                 page_rank = (links.count(link) * 0.25) / len(links)
-                print(page_rank)
-                all_documents[]
-
+                temp_page_rank[link] += page_rank
+        for url, rank in temp_page_rank.items():
+            hash_url = urls[url]["hash"]
+            to_update = all_documents[hash_url]
+            to_update["page_rank"] = rank
+            to_update.save()
 
 
     def upload_doc(self, collection, doc, key, update=False):
@@ -142,6 +148,7 @@ if __name__ == "__main__":
             print(data["text"])
             new_docs.append(data["text"])
     """
+    # TODO: URL not as list
     new_docs = [
         ("oh romeo wherefore art thou art thou?", ["a.com"], ["b.com"]),
         ("These Violent Delights Have Violent Ends", ["b.com"], ["a.com"]),
