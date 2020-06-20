@@ -3,38 +3,25 @@
 This is a simple search engine to query local files.
 """
 
-import os
-import glob
 import math
-import json
-import spacy
+import hashlib
 from collections import defaultdict
+import spacy
+from pyArango.connection import *
+
 nlp = spacy.load("en_core_web_sm")
 
 __author__ = "Yanic Moeller"
 __license__ = "MIT"
 
+conn = Connection(username="root", password="1234", arangoURL="http://127.0.0.1:8530/")
+db = conn["_system"]
 
-class search_engine:
 
-    def __init__(self, docs):
-        self.inverted_index = defaultdict(set)
-        self.forward_index = defaultdict(lambda: defaultdict(int))
-        self.all_documents = dict()
-        for doc in docs:
-            doc_hash = hash(doc)
-            self.all_documents[doc_hash] = doc
-            tokens = self.tokenize(doc)
-            for token in tokens:
-                self.inverted_index[token].add(doc_hash)
-            for token in set(tokens):
-                self.forward_index[doc_hash][token] += tokens.count(token)
-        self.number_of_pages = len(self.forward_index.keys())
-        print(self.all_documents)
-        print(self.inverted_index)
-        print(self.forward_index)
+class PySearchEngine:
 
-    def tokenize(self, doc_to_tokenize):
+    @staticmethod
+    def tokenize(doc_to_tokenize):
         stop_words = {"the", "a", "an", "is", "this", "to", "be", "-PRON-"}
         document = []
         for word in doc_to_tokenize.split():
@@ -45,35 +32,110 @@ class search_engine:
         document = [token.lemma_ for token in document if token.lemma_ not in stop_words]
         return document
 
-    def get_tf_idf(self, doc, term):
-        """Calculates the TF-IDF value for a term.
+    @staticmethod
+    def create_hash_value(s):
+        hash_object = hashlib.sha256(str(s).encode('utf-8'))
+        return hash_object.hexdigest()
 
-        Args:
-            doc: The document itself
-            tf: How often the term appears in a document
-            df: Number of documents that contain this term
-            number_of_pages: Number of all documents
-
-        Returns:
-            TF-IDF as a float.
-
-        """
-        tf = self.forward_index[doc][term] / len(self.forward_index[doc].keys())
-        idf = math.log10(self.number_of_pages / len(self.inverted_index[term]))
+    @staticmethod
+    def get_tf_idf(doc, term):
+        forward_index = db["forward_index"]
+        inverted_index = db["inverted_index"]
+        number_of_pages = db["all_documents"].count()
+        forward_tokens = forward_index[doc]["tokens"].getStore()
+        tf = forward_index[doc]["tokens"][term] / len(forward_tokens.keys())
+        inverted_tokens = inverted_index[term]["document"]
+        idf = math.log10(number_of_pages / len(inverted_tokens))
         return tf * idf
 
-    def query(self, new_query):
-        new_query = set(self.tokenize(new_query))
-        # result = defaultdict(lambda: defaultdict(int))
+    def query(self, this_query):
+        this_query = set(self.tokenize(this_query))
         result = defaultdict(int)
-        for q in new_query:
-            print(q)
-            for found_doc in self.inverted_index[q]:
-                print(self.get_tf_idf(found_doc, q))
-                result[found_doc] += self.get_tf_idf(found_doc, q)
-        for id in sorted(result, key=result.get, reverse=True):
-            print(result[id], self.all_documents[id])
+        all_documents = db["all_documents"]
+        inverted_index = db["inverted_index"]
+        for q in this_query:
+            try:
+                found_doc = inverted_index[q]["document"]
+                for doc in found_doc:
+                    # Calculate the TF-IDF.
+                    result[doc] += self.get_tf_idf(doc, q)
+                    # Retrieve the PageRank.
+                    page_rank = all_documents[doc]["page_rank"]
+                    result[doc] += page_rank
+            except:
+                print("Word not found")
+        # Display the results.
+        for doc_id in sorted(result, key=result.get, reverse=True):
+            print(result[doc_id], all_documents[doc_id]["text"])
         return result
+
+
+class Indexer(PySearchEngine):
+
+    def __init__(self, docs_to_index):
+        all_documents = db["all_documents"]
+        inverted_index = db["inverted_index"]
+        forward_index = db["forward_index"]
+        urls = db["urls"]
+        for doc in docs_to_index:
+            # Create a unique hash for this document.
+            doc_hash = self.create_hash_value(doc[0])
+            # Store this document in the database.
+            doc = {"text": doc[0],
+                   "url": doc[1],
+                   "links": doc[2],
+                   "page_rank": 0}
+            self.upload_doc(collection=all_documents, doc=doc, key=doc_hash, update=False)
+            # Store URLs with their hashes.
+            self.upload_doc(collection=urls, doc={"hash": doc_hash}, key=str(doc["url"][0]),
+                            update=False)
+            # Create the forward index.
+            tokens = self.tokenize(doc["text"])
+            new_forward_doc = {token: tokens.count(token) for token in tokens}
+            self.upload_doc(collection=forward_index,
+                            doc={"tokens": new_forward_doc},
+                            key=doc_hash, update=False)
+            # Create/Update the inverted index.
+            for t in tokens:
+                self.upload_doc(collection=inverted_index,
+                                doc={"document": [doc_hash]},
+                                key=t, update=True)
+        # Calculate the page rank.
+        temp_page_rank = defaultdict(float)
+        for doc in all_documents.fetchAll():
+            links = doc.getStore()["links"]
+            for link in set(links):
+                page_rank = (links.count(link) * 0.25) / len(links)
+                temp_page_rank[link] += page_rank
+        for url, rank in temp_page_rank.items():
+            hash_url = urls[url]["hash"]
+            to_update = all_documents[hash_url]
+            to_update["page_rank"] = rank
+            to_update.save()
+
+
+    def upload_doc(self, collection, doc, key, update=False):
+        try:
+            doc_in_db = collection[key]
+            for k, v in doc.items():
+                if update:
+                    existing_values = doc_in_db[k]
+                    existing_values.append(v[0])
+                    doc_in_db[k] = list(set(existing_values))
+                else:
+                    doc_in_db[k] = v
+            doc_in_db.save()
+        except Exception as e:
+            create_doc = collection.createDocument()
+            for k, v in doc.items():
+                create_doc[k] = v
+            create_doc._key = key
+            create_doc.save()
+
+class Crawler:
+
+    def __init__(self):
+        pass
 
 if __name__ == "__main__":
     """ This is executed when run from the command line """
@@ -87,16 +149,19 @@ if __name__ == "__main__":
             print(data["text"])
             new_docs.append(data["text"])
     """
+    # TODO: URL not as list
     new_docs = [
-        "oh romeo wherefore art thou art thou?",
-        "These Violent Delights Have Violent Ends",
-        "The fool doth think he is wise, but the wise man knows himself to be a fool.",
-        "Love all, trust a few, do wrong to none.",
-        "Though this be madness, yet there is method in't.",
-        "What is love?",
-        "Could this be madness or such blah?"
+        ("oh romeo wherefore art thou art thou?", ["a.com"], ["b.com"]),
+        ("These Violent Delights Have Violent Ends", ["b.com"], ["a.com"]),
+        ("The fool doth think he is wise, but the wise man knows himself to be a fool.",
+         ["c.com"], ["a.com", "a.com", "e.com"]),
+        ("Love all, trust a few, do wrong to none.", ["d.com"], ["a.com"]),
+        ("Though this be madness, yet there is method in't.", ["e.com"], ["a.com"]),
+        ("What is love?", ["f.com"], ["a.com"]),
+        ("Could this be madness or such blah?", ["g.com"], ["b.com", "d.com", "e.com"])
     ]
-    test = search_engine(new_docs)
+    engine = PySearchEngine()
+    #index = Indexer(docs_to_index=new_docs)
     while True:
-        my_new_query = input("Enter query: ")
-        test.query(my_new_query)
+        new_query = input("Enter query: ")
+        engine.query(new_query)

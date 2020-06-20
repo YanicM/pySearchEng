@@ -1,0 +1,19 @@
+version: '3.7'
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+  arangodb_db_container:
+    image: arangodb:latest
+    environment:
+      ARANGO_ROOT_PASSWORD: 1234
+    ports:
+      - 8530:8529
+    volumes:
+      - arangodb_data_container:/var/lib/arangodb3
+      - arangodb_apps_data_container:/var/lib/arangodb3-apps
+
+volumes:
+  arangodb_data_container:
+  arangodb_apps_data_container:
