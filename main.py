@@ -54,13 +54,14 @@ class PySearchEngine:
         all_documents = db["all_documents"]
         inverted_index = db["inverted_index"]
         for q in this_query:
-            print(q)
             try:
                 found_doc = inverted_index[q]["document"]
-                print(found_doc)
                 for doc in found_doc:
-                    print(doc)
+                    # Calculate the TF-IDF.
                     result[doc] += self.get_tf_idf(doc, q)
+                    # Retrieve the PageRank.
+                    page_rank = all_documents[doc]["page_rank"]
+                    result[doc] += page_rank
             except:
                 print("Word not found")
         # Display the results.
@@ -160,7 +161,7 @@ if __name__ == "__main__":
         ("Could this be madness or such blah?", ["g.com"], ["b.com", "d.com", "e.com"])
     ]
     engine = PySearchEngine()
-    index = Indexer(docs_to_index=new_docs)
-    #while True:
-    #    new_query = input("Enter query: ")
-    #    engine.query(new_query)
+    #index = Indexer(docs_to_index=new_docs)
+    while True:
+        new_query = input("Enter query: ")
+        engine.query(new_query)
