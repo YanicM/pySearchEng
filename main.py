@@ -8,8 +8,15 @@ import hashlib
 from collections import defaultdict
 import spacy
 from pyArango.connection import *
+from pyArango.theExceptions import DocumentNotFoundError
+from bs4 import BeautifulSoup
+from bs4.element import Comment
+import urllib.request
+from urllib.parse import urljoin, urlsplit, urldefrag
+from time import sleep
 
-nlp = spacy.load("en_core_web_sm")
+# nlp = spacy.load("en_core_web_sm")
+nlp = spacy.load("de_core_news_sm")
 
 __author__ = "Yanic Moeller"
 __license__ = "MIT"
@@ -27,9 +34,13 @@ class PySearchEngine:
         for word in doc_to_tokenize.split():
             word = "".join([c for c in word if c and c.isalpha()])
             document.append("".join(word.lower()))
+        print()
         print(document)
         document = nlp(" ".join(document))
         document = [token.lemma_ for token in document if token.lemma_ not in stop_words]
+        # TESTING
+        document = [token.encode("ascii", errors="ignore").decode().strip() for token in document]
+        document = list(filter(None, document))
         return document
 
     @staticmethod
@@ -47,6 +58,32 @@ class PySearchEngine:
         inverted_tokens = inverted_index[term]["document"]
         idf = math.log10(number_of_pages / len(inverted_tokens))
         return tf * idf
+
+    @staticmethod
+    def url_to_key(url):
+        replace_chars = "".join([c if c.isalnum() else "_" for c in url])
+        return replace_chars.encode("ascii", errors="ignore").decode()
+
+    def upload_doc(self, collection, doc, key, update=False):
+        sleep(0.2)
+        try:
+            doc_in_db = collection[key]
+            for k, v in doc.items():
+                if update:
+                    existing_values = doc_in_db[k]
+                    existing_values.append(v[0])
+                    doc_in_db[k] = list(set(existing_values))
+                else:
+                    doc_in_db[k] = v
+            doc_in_db.save()
+        except DocumentNotFoundError:
+            create_doc = collection.createDocument()
+            for k, v in doc.items():
+                create_doc[k] = v
+            print(f"Creating doc with key '{key}'")
+            create_doc._key = key
+            create_doc.save()
+        # TODO: if upload error -> sleep
 
     def query(self, this_query):
         this_query = set(self.tokenize(this_query))
@@ -85,6 +122,7 @@ class Indexer(PySearchEngine):
                    "url": doc[1],
                    "links": doc[2],
                    "page_rank": 0}
+            print(f"trying to upload {doc}")
             self.upload_doc(collection=all_documents, doc=doc, key=doc_hash, update=False)
             # Store URLs with their hashes.
             self.upload_doc(collection=urls, doc={"hash": doc_hash}, key=str(doc["url"][0]),
@@ -114,28 +152,64 @@ class Indexer(PySearchEngine):
             to_update.save()
 
 
-    def upload_doc(self, collection, doc, key, update=False):
-        try:
-            doc_in_db = collection[key]
-            for k, v in doc.items():
-                if update:
-                    existing_values = doc_in_db[k]
-                    existing_values.append(v[0])
-                    doc_in_db[k] = list(set(existing_values))
-                else:
-                    doc_in_db[k] = v
-            doc_in_db.save()
-        except Exception as e:
-            create_doc = collection.createDocument()
-            for k, v in doc.items():
-                create_doc[k] = v
-            create_doc._key = key
-            create_doc.save()
+class Crawler(PySearchEngine):
 
-class Crawler:
+    def __init__(self, domain):
+        print(f"Crawling: {domain}")
+        self.domain = domain
+        self.links = defaultdict(list)
+        self.documents = dict()
 
-    def __init__(self):
-        pass
+    def collect_links(self, domain):
+        #urls_to_crawl = set([self.domain])
+        parser = 'html.parser'
+        resp = urllib.request.urlopen(domain)
+        soup = BeautifulSoup(resp, parser, from_encoding=resp.info().get_param('charset'))
+        base = domain
+
+        for link in soup.find_all('a', href=True):
+            #print(link['href'])
+            full_href = urljoin(base, link["href"])
+            #print(full_href)
+            no_query = urlsplit(full_href)._replace(query=None).geturl()
+            unfragmented = urldefrag(no_query)
+            print(unfragmented[0])
+            if domain in full_href:
+                self.links[domain].append(unfragmented[0])
+
+        for link in self.links[domain]:
+            if not self.links[link]:
+                self.collect_links(link)
+
+        if not self.links[domain]:
+            self.links[domain].append(True)
+
+    def store_urls(self):
+        crawler = db["urls"]
+        for url in self.links.keys():
+            self.upload_doc(collection=crawler, doc={"links_to": self.links[url]}, key=self.url_to_key(url), update=False)
+
+    def tag_visible(self, element):
+        if element.parent.name in ['style', 'script', 'head', 'title', 'meta', '[document]']:
+            return False
+        if isinstance(element, Comment):
+            return False
+        return True
+
+    def text_from_html(self, body):
+        soup = BeautifulSoup(body, 'html.parser')
+        texts = soup.findAll(text=True)
+        visible_texts = filter(self.tag_visible, texts)
+        return u" ".join(t.strip() for t in visible_texts)
+
+    def retrieve_all_documents(self):
+        for link in self.links.keys():
+            html = urllib.request.urlopen(link).read()
+            text = self.text_from_html(html)
+            self.documents[link] = (text, link, self.links[link])
+            print(f"{link} = {(text, [link], self.links[link])}")
+        return self.documents
+
 
 if __name__ == "__main__":
     """ This is executed when run from the command line """
@@ -161,7 +235,15 @@ if __name__ == "__main__":
         ("Could this be madness or such blah?", ["g.com"], ["b.com", "d.com", "e.com"])
     ]
     engine = PySearchEngine()
-    #index = Indexer(docs_to_index=new_docs)
+    c = Crawler("test.com")
+    # c.collect_links("http://www.gpsbasecamp.com/")
+    c.collect_links("https://cis.uni-muenchen.de/")
+    # print(c.links)
+    c.store_urls()
+    my_docs = c.retrieve_all_documents()
+    # print(my_docs.values())
+    index = Indexer(docs_to_index=my_docs.values())
     while True:
         new_query = input("Enter query: ")
         engine.query(new_query)
+    #print(c.url_to_key("http://cis.uni-muenchen.de/"))
