@@ -164,6 +164,7 @@ class PySearchEngine:
 
 
 class Indexer(PySearchEngine):
+    """ Creates an index for all the websites. """
 
     def __init__(self, docs_to_index):
         all_documents = db["all_documents"]
@@ -213,6 +214,7 @@ class Indexer(PySearchEngine):
 
 
 class Crawler(PySearchEngine):
+    """ Scrapes a websites, saves all its links and then its contents. """
 
     def __init__(self, domain):
         print(f"Crawling: {domain}")
@@ -310,7 +312,7 @@ class Crawler(PySearchEngine):
 
 
 if __name__ == "__main__":
-    """ This is executed when run from the command line """
+    """ Scrape a new website and then run queries on it. """
     engine = PySearchEngine()
     c = Crawler("http://helloworldcollection.de/")
     c.collect_links("http://helloworldcollection.de/")
