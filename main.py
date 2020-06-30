@@ -1,36 +1,41 @@
 #!/usr/bin/env python3
 """
-This is a simple search engine to query local files.
+This is a simple search engine to crawl and search websites.
 """
+__author__ = "Yanic Moeller"
+__license__ = "MIT"
 
 import math
 import hashlib
 from collections import defaultdict
-import spacy
+from time import sleep
+import urllib.request
+from urllib.parse import urljoin, urlsplit, urldefrag, urlparse
+from urllib3.exceptions import NewConnectionError, MaxRetryError
 from pyArango.connection import *
 from pyArango.theExceptions import DocumentNotFoundError
 from bs4 import BeautifulSoup
 from bs4.element import Comment
 import validators
-import urllib.request
-from urllib.parse import urljoin, urlsplit, urldefrag, urlparse
-from urllib3.exceptions import NewConnectionError, MaxRetryError
-from time import sleep
+import spacy
 
 nlp = spacy.load("en_core_web_sm")
-# nlp = spacy.load("de_core_news_sm")
 
-__author__ = "Yanic Moeller"
-__license__ = "MIT"
+# Uncomment the next line to use German documents.
+# nlp = spacy.load("de_core_news_sm")
 
 conn = Connection(username="root", password="1234", arangoURL="http://127.0.0.1:8530/")
 db = conn["_system"]
 
 
 class PySearchEngine:
+    """
+    Contains methods that the crawler and indexer need. Also contains a method for running queries.
+    """
 
     @staticmethod
     def tokenize(doc_to_tokenize):
+        """ Tokenizes a sentences. """
         stop_words = {"the", "a", "an", "is", "this", "to", "be", "-PRON-"}
         document = []
         for word in doc_to_tokenize.split():
@@ -39,18 +44,19 @@ class PySearchEngine:
         print(document)
         document = nlp(" ".join(document))
         document = [token.lemma_ for token in document if token.lemma_ not in stop_words]
-        # TESTING
         document = [token.encode("ascii", errors="ignore").decode().strip() for token in document]
         document = list(filter(None, document))
         return document
 
     @staticmethod
     def create_hash_value(s):
+        """ Creates a unique hash value for any string. """
         hash_object = hashlib.sha256(str(s).encode('utf-8'))
         return hash_object.hexdigest()
 
     @staticmethod
     def get_tf_idf(doc, term):
+        """ Using the contents in the DB calculate the TF-IDF. """
         forward_index = db["forward_index"]
         inverted_index = db["inverted_index"]
         number_of_pages = db["all_documents"].count()
@@ -62,12 +68,14 @@ class PySearchEngine:
 
     @staticmethod
     def url_to_key(url):
+        """ Replace all characters that are not letters or numbers with underscores. """
         if not isinstance(url, str):
             return "KeyError"
         replace_chars = "".join([c if c.isalnum() else "_" for c in url])
         return replace_chars.encode("ascii", errors="ignore").decode()
 
     def upload_doc(self, collection, doc, key, update=False):
+        """ Create a new document or update the existing document in the database. """
         sleep(0.05)
         try:
             doc_in_db = collection[key]
@@ -88,7 +96,6 @@ class PySearchEngine:
             print(f"Creating doc with key '{key}'")
             create_doc._key = key
             create_doc.save()
-        # TODO: if upload error -> sleep
         except Exception as e:
             print(str(e))
             sleep(0.3)
@@ -96,12 +103,14 @@ class PySearchEngine:
             self.upload_doc(collection=collection, doc=doc, key=key, update=test)
 
     def reset_page_rank(self):
+        """ Set the page rank of every document back to 0. """
         all_documents = db["all_documents"]
         for doc in all_documents.fetchAll():
             doc["page_rank"] = 0
             doc.save()
 
     def create_page_rank(self):
+        """ Calculate the page rank for every page. """
         all_documents = db["all_documents"]
         temp_urls = dict()
         urls = db["urls"]
@@ -127,6 +136,7 @@ class PySearchEngine:
 
 
     def query(self, this_query):
+        """ Start a new query. """
         this_query = set(self.tokenize(this_query))
         result = defaultdict(int)
         all_documents = db["all_documents"]
@@ -145,9 +155,11 @@ class PySearchEngine:
         # Display the results.
         for doc_id in sorted(result, key=result.get, reverse=True):
             if len(all_documents[doc_id]["text"]) > 50:
-                print(result[doc_id], all_documents[doc_id]["url"], all_documents[doc_id]["text"][:50])
+                print(result[doc_id], all_documents[doc_id]["url"],
+                      all_documents[doc_id]["text"][:50])
             else:
-                print(result[doc_id], all_documents[doc_id]["url"], all_documents[doc_id]["text"])
+                print(result[doc_id], all_documents[doc_id]["url"],
+                      all_documents[doc_id]["text"])
         return result
 
 
@@ -213,17 +225,9 @@ class Crawler(PySearchEngine):
             self.netloc = self.netloc[4:]
 
     def collect_links(self, domain=None):
-        #urls_to_crawl = set([self.domain])
+        """ If this is a valid website, search for links on this website. """
         domain = domain.strip()
         print(f"Crawling -> {domain}")
-        """
-        ends = [".gz", ".pdf", ".tgz", ".txt", ".pptx", ".ptx", ".zip", ".jpg", ".gif", ".jpeg", ".ppt", ".doc", ".ps", ".png", ".js", ".css", ".md"]
-        for end in ends:
-            if end in domain:
-                del self.links[domain]
-                print("Not an HTML file")
-                return
-        """
         if domain.endswith(".html") or domain.endswith(".php") or domain.endswith("/"):
             print("Reading...")
         elif not "." in domain[-5:]:
@@ -245,10 +249,7 @@ class Crawler(PySearchEngine):
         soup = BeautifulSoup(resp, parser, from_encoding=resp.info().get_param('charset'))
         if self.has_head(soup):
             for link in soup.find_all('a', href=True):
-                #sleep(0.2)
-                #print(link['href'])
                 full_href = urljoin(base, link["href"])
-                #print(full_href)
                 no_query = urlsplit(full_href)._replace(query=None).geturl()
                 unfragmented = urldefrag(no_query)
                 print(unfragmented[0])
@@ -259,19 +260,21 @@ class Crawler(PySearchEngine):
                 if not self.links[link]:
                     try:
                         self.collect_links(link)
-                    except:
-                        # 404
-                        continue
+                    except Exception as e:
+                        print(str(e))
 
             if not self.links[domain]:
                 self.links[domain].append(True)
 
     def store_urls(self):
+        """ Create a document that stores where this website links to. """
         crawler = db["urls"]
         for url in self.links.keys():
-            self.upload_doc(collection=crawler, doc={"links_to": self.links[url]}, key=self.url_to_key(url), update=False)
+            self.upload_doc(collection=crawler, doc={"links_to": self.links[url]},
+                            key=self.url_to_key(url), update=False)
 
     def tag_visible(self, element):
+        """ When crawling, hide all unimportant sections. """
         if element.parent.name in ['style', 'script', 'head', 'title', 'meta', '[document]']:
             return False
         if isinstance(element, Comment):
@@ -279,18 +282,21 @@ class Crawler(PySearchEngine):
         return True
 
     def text_from_html(self, body):
+        """ Takes only valid text from the website. """
         soup = BeautifulSoup(body, 'html.parser')
         texts = soup.findAll(text=True)
         visible_texts = filter(self.tag_visible, texts)
         return u" ".join(t.strip() for t in visible_texts)
 
     def has_head(self, test_soup):
+        """ Check if the document contains a header section. """
         if test_soup.head:
             return True
         else:
             return False
 
     def retrieve_all_documents(self):
+        """ Get all the links on the current website. """
         for link in self.links.keys():
             try:
                 html = urllib.request.urlopen(link).read()
@@ -305,49 +311,14 @@ class Crawler(PySearchEngine):
 
 if __name__ == "__main__":
     """ This is executed when run from the command line """
-    """
-    new_docs = []
-    folder_path = "./test/"
-    for letter in glob.glob(os.path.join(folder_path, "*.json")):
-        print(letter)
-        with open(letter, encoding="utf-8") as json_file:
-            data = json.load(json_file)
-            print(data["text"])
-            new_docs.append(data["text"])
-    """
-    # TODO: URL not as list
-    new_docs = [
-        ("oh romeo wherefore art thou art thou?", ["a.com"], ["b.com"]),
-        ("These Violent Delights Have Violent Ends", ["b.com"], ["a.com"]),
-        ("The fool doth think he is wise, but the wise man knows himself to be a fool.",
-         ["c.com"], ["a.com", "a.com", "e.com"]),
-        ("Love all, trust a few, do wrong to none.", ["d.com"], ["a.com"]),
-        ("Though this be madness, yet there is method in't.", ["e.com"], ["a.com"]),
-        ("What is love?", ["f.com"], ["a.com"]),
-        ("Could this be madness or such blah?", ["g.com"], ["b.com", "d.com", "e.com"])
-    ]
     engine = PySearchEngine()
-    ## c = Crawler("https://www.gatsbyjs.org/")
-    #c = Crawler("https://corrux.io/")
-    ## c = Crawler("https://www.cis.uni-muenchen.de/")
-    ## c = Crawler("http://www.gpsbasecamp.com/")
-    ## c = Crawler("http://www.dogthebountyhunter.com/")
-    ## c = Crawler("https://www.fullstackpython.com/")
-    ## c = Crawler("http://www.realpython.com/")
-    ## c.collect_links("https://cis.uni-muenchen.de/")
-    ## c.collect_links("https://www.gatsbyjs.org/")
-    #c.collect_links("https://corrux.io/")
-    ## c.collect_links("http://www.gpsbasecamp.com/")
-    ## c.collect_links("http://www.dogthebountyhunter.com/")
-    ## c.collect_links("https://www.fullstackpython.com/")
-    ## c.collect_links("http://www.realpython.com/")
-    #c.store_urls()
-    #my_docs = c.retrieve_all_documents()
-    ## print(my_docs.values())
-    #index = Indexer(docs_to_index=my_docs.values())
-    #engine.reset_page_rank()
+    c = Crawler("http://helloworldcollection.de/")
+    c.collect_links("http://helloworldcollection.de/")
+    c.store_urls()
+    my_docs = c.retrieve_all_documents()
+    index = Indexer(docs_to_index=my_docs.values())
+    engine.reset_page_rank()
     engine.create_page_rank()
     while True:
         new_query = input("Enter query: ")
         engine.query(new_query)
-    #print(c.url_to_key("http://cis.uni-muenchen.de/"))
